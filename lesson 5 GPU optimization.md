@@ -530,3 +530,263 @@ The most important principle:
 **FlashAttention optimizes data movement, not the
 fundamental mathematical complexity of attention.**
 
+
+# Lesson 5.4 — CUDA Kernel Fusion
+
+## 1. What Is a CUDA Kernel?
+
+A CUDA kernel is a function executed by GPU threads.
+
+For example:
+
+$$
+C = A + B
+$$
+
+A simple CUDA kernel assigns one thread to calculate
+one output element.
+
+## 2. The Problem: Too Many Small Kernels
+
+Consider this calculation:
+
+$$
+Y = (A+B)\times C
+$$
+
+Without fusion, we use two kernels.
+
+### Kernel 1: Addition
+
+$$
+T = A+B
+$$
+
+The intermediate result T is written to global memory.
+
+### Kernel 2: Multiplication
+
+$$
+Y = T\times C
+$$
+
+The GPU must read T from global memory again.
+
+This creates two problems:
+
+- Extra global-memory transfers.
+- Additional kernel launch overhead.
+
+## 3. The Solution: Kernel Fusion
+
+Combine both operations into one kernel.
+
+$$
+Y = (A+B)\times C
+$$
+
+Example CUDA code:
+
+```cpp
+__global__ void fused(
+    float* A,
+    float* B,
+    float* C,
+    float* Y,
+    int N
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i < N) {
+        float temp = A[i] + B[i];
+        Y[i] = temp * C[i];
+    }
+}
+```
+
+The intermediate variable `temp` can remain in
+a register instead of being written to global memory.
+
+## 4. Memory Transfer Comparison
+
+Assume:
+- Each array contains N elements.
+- Each element is a 32-bit float (4 bytes).
+
+### Without Fusion
+
+| Operation | Data transferred |
+|---|---:|
+| Read A | N |
+| Read B | N |
+| Write T | N |
+| Read T | N |
+| Read C | N |
+| Write Y | N |
+| Total | 6N |
+
+Total memory traffic:
+
+$$
+6N \times 4 = 24N \text{ bytes}
+$$
+
+### With Fusion
+
+| Operation | Data transferred |
+|---|---:|
+| Read A | N |
+| Read B | N |
+| Read C | N |
+| Write Y | N |
+| Total | 4N |
+
+Total memory traffic:
+
+$$
+4N \times 4 = 16N \text{ bytes}
+$$
+
+Reduction:
+
+$$
+\frac{24N-16N}{24N}\times100\%
+=33.3\%
+$$
+
+Fusion reduces the simplified global-memory traffic
+by approximately 33.3%.
+
+It also reduces kernel launches from two to one.
+
+## 5. Where Does the Intermediate Result Go?
+
+In the fused kernel:
+
+```cpp
+float temp = A[i] + B[i];
+Y[i] = temp * C[i];
+```
+
+The temporary variable can normally be stored
+in a register.
+
+GPU memory hierarchy:
+
+1. Registers: private to each thread.
+2. Shared memory: shared within a block.
+3. Global memory: large, but higher latency.
+
+Avoiding unnecessary global-memory writes
+is a major benefit of fusion.
+
+## 6. Kernel Fusion in PyTorch
+
+PyTorch code:
+
+```python
+y = (a + b) * c
+```
+
+These operations may execute as separate GPU kernels.
+
+Using `torch.compile` can allow the compiler
+to fuse compatible operations.
+
+Example:
+
+```python
+import torch
+
+def calculation(a, b, c):
+    return (a + b) * c
+
+compiled_calculation = torch.compile(calculation)
+
+a = torch.randn(1_000_000, device="cuda")
+b = torch.randn(1_000_000, device="cuda")
+c = torch.randn(1_000_000, device="cuda")
+
+y = compiled_calculation(a, b, c)
+```
+
+Fusion is one optimization that `torch.compile`
+may apply. It is not guaranteed for every operation.
+
+## 7. Where Is Kernel Fusion Useful?
+
+Common examples:
+
+- Element-wise operations.
+- ReLU and GELU activation functions.
+- Bias addition followed by activation.
+- Normalization operations.
+- Combinations of reductions and pointwise operations.
+
+For example:
+
+$$
+Y = \text{ReLU}(XW^T+b)
+$$
+
+An optimized implementation may combine compatible
+operations to reduce intermediate memory traffic.
+
+## 8. Is Kernel Fusion Always Better?
+
+No. There are trade-offs.
+
+### Register Pressure
+
+A larger fused kernel may require more registers.
+
+This can reduce the number of resident blocks
+on an SM and lower occupancy.
+
+### Reduced Parallelism
+
+Combining operations can sometimes reduce
+opportunities for independent parallel execution.
+
+### Kernel Complexity
+
+Large fused kernels can be harder to optimize
+and maintain.
+
+### Different Computational Requirements
+
+Matrix multiplication may benefit from a highly
+optimized library kernel. Fusing it with other
+operations is not necessarily faster.
+
+The correct rule:
+
+Fusion is useful when saved memory traffic and
+kernel launch overhead outweigh its costs.
+
+## 9. Compare Three Optimization Techniques
+
+| Technique | Main objective |
+|---|---|
+| GEMM tiling | Reuse loaded data |
+| FlashAttention | Avoid large intermediate matrices |
+| Kernel fusion | Avoid intermediate writes and extra launches |
+
+All three techniques address an important GPU problem:
+moving data between memory and computation units.
+
+## 10. Key Takeaways
+
+1. Kernel fusion combines multiple operations
+   into one GPU kernel.
+2. It reduces intermediate global-memory traffic.
+3. It reduces kernel launch overhead.
+4. Intermediate values can remain in registers.
+5. Excessive fusion can increase register pressure
+   and reduce occupancy.
+6. Fusion is not always faster; measure performance.
+
+The most important principle:
+
+**Combine operations when the saved memory traffic
+and launch overhead outweigh the costs of fusion.**
