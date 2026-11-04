@@ -85,7 +85,7 @@ S=QK^T
 $$
 
 $$
-P=\operatorname{softmax}(S)
+P=\text{softmax}(S)
 $$
 
 $$
